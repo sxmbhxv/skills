@@ -57,32 +57,57 @@ The symlink means a `git pull` updates the installed skill.
 
 ### Configure
 
-Credentials come only from environment variables, so they never end up in a repo or a chat transcript. Add these
-to `~/.bashrc` (or `~/.zshrc`) and restart Claude Code:
+You log in with your **portal email and password**. Credentials come only from environment variables, so they never
+end up in a repo or a chat transcript. Set them up in your own terminal. Don't paste the password into Claude.
 
-```bash
-export PORTAL_8848_URL="https://<portal-host>"
-export PORTAL_8848_API_KEY="<key>"
-export PORTAL_8848_API_SECRET="<secret>"
-```
+1. Create a private env file:
+
+   ```bash
+   mkdir -p ~/.config && nano ~/.config/portal-8848.env
+   ```
+
+   ```bash
+   export PORTAL_8848_URL="https://<portal-host>"
+   export PORTAL_8848_USERNAME='you@8848digital.com'
+   export PORTAL_8848_PASSWORD='your-password'
+   ```
+
+2. Lock it down and load it from your shell profile (use `~/.zshrc` on zsh):
+
+   ```bash
+   chmod 600 ~/.config/portal-8848.env
+   echo '[ -f ~/.config/portal-8848.env ] && . ~/.config/portal-8848.env' >> ~/.bashrc
+   ```
+
+3. Restart Claude Code, then check the setup:
+
+   ```bash
+   python3 ~/.claude/skills/8848-triage/scripts/portal.py check
+   ```
+
+   It should print `"auth": "password"` and your email.
+
+Notes:
+- **Use single quotes around the password.** Inside double quotes the shell expands `$`, `!` and backticks, and the
+  login fails. Write a literal `'` in the password as `'\''`.
+- Putting the exports straight into `~/.bashrc` also works. The separate `chmod 600` file just keeps the password out
+  of a file that tends to get shared and backed up.
+- Each portal command logs in and then logs out again. Logins show up in the portal's activity log, and your browser
+  session isn't affected.
 
 | Variable | Required | Meaning |
 |---|---|---|
 | `PORTAL_8848_URL` | yes | Portal base URL (no `/app/...` suffix) |
-| `PORTAL_8848_API_KEY` / `PORTAL_8848_API_SECRET` | yes* | API key pair of your portal user |
-| `PORTAL_8848_USERNAME` / `PORTAL_8848_PASSWORD` | alt* | Used only if the key pair is absent |
+| `PORTAL_8848_USERNAME` | yes* | Your portal login email |
+| `PORTAL_8848_PASSWORD` | yes* | Your portal password |
+| `PORTAL_8848_API_KEY` / `PORTAL_8848_API_SECRET` | alt* | Only if your account can't log in with a password (see below) |
 | `PORTAL_8848_REMARKS_FIELD` | no | Task field that receives the GitHub link. Default `task_remarks` |
 
-\* Either the key pair or the username/password pair.
+\* Email + password is the default. If both pairs are set, email + password is used.
 
-To get an API key and secret: in the portal, open the avatar menu, then **My Settings**, then **API Access**, and click **Generate Keys**.
-The secret is shown only once.
-
-Check the setup with:
-
-```bash
-python3 ~/.claude/skills/8848-triage/scripts/portal.py check
-```
+**If your account signs in with Google/SSO or has two-factor auth**, password login fails with `HTTP 401`. Use an
+API key instead: in the portal, open the avatar menu, then **My Settings**, then **API Access**, and click **Generate Keys** (the secret is shown only
+once). Put `PORTAL_8848_API_KEY` and `PORTAL_8848_API_SECRET` in the env file in place of the username and password lines.
 
 ### Use
 

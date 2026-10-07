@@ -29,10 +29,13 @@ a duplicate issue or a misread requirement is costly to undo once code is writte
 
 Run these together:
 
-1. `portal.py check`. If it reports missing variables, show the user the setup block from
-   `references/frappe-portal.md#1-setup` and wait. Credentials live only in environment variables, which the
-   user chose so that secrets stay out of repos and transcripts. So don't ask them to paste a secret into the
-   chat, don't echo the variables' values, and don't write the values to any file.
+1. `portal.py check`. By default it logs in with the user's portal email and password
+   (`PORTAL_8848_USERNAME` / `PORTAL_8848_PASSWORD`). An API key pair is the alternative for accounts that can't
+   use a password. If it reports missing variables or a failed login, show the user the setup block from
+   `references/frappe-portal.md#1-setup` and wait. Credentials live only in environment variables so that
+   secrets stay out of repos and transcripts. So don't ask the user to paste their password into the chat,
+   don't echo the variables' values, and don't write the values to any file. The user sets them up
+   themselves.
 2. `gh auth status`.
 3. `git rev-parse --show-toplevel`, `gh repo view --json nameWithOwner,url`, `git status --porcelain`,
    `git branch --show-current`. If the working directory isn't a git repo, ask which local repo the task is for.

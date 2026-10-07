@@ -3,10 +3,10 @@
 
 Configuration comes from the environment, never from files:
   PORTAL_8848_URL             base URL of the portal, e.g. https://projects.example.com
-  PORTAL_8848_API_KEY         } token auth (preferred)
-  PORTAL_8848_API_SECRET      }
-  PORTAL_8848_USERNAME        } fallback: session login
-  PORTAL_8848_PASSWORD        }
+  PORTAL_8848_USERNAME        } default: email + password login (the session is logged out
+  PORTAL_8848_PASSWORD        }   again when the command ends)
+  PORTAL_8848_API_KEY         } alternative for accounts that can't use a password
+  PORTAL_8848_API_SECRET      }   (Google/SSO login, two-factor auth)
   PORTAL_8848_REMARKS_FIELD   Task field that receives the GitHub link (default: task_remarks)
 
 Every command prints JSON on stdout. Errors go to stderr with exit code 1.
@@ -158,14 +158,32 @@ class Portal:
         self.headers = {"Accept": "application/json"}
         key, secret = os.environ.get(ENV_KEY, "").strip(), os.environ.get(ENV_SECRET, "").strip()
         user, password = os.environ.get(ENV_USER, "").strip(), os.environ.get(ENV_PASSWORD, "")
-        if key and secret:
+        self.auth = None
+        if user and password:
+            try:
+                self.request("POST", "/api/method/login", body={"usr": user, "pwd": password})
+            except PortalError as e:
+                if e.code == 401:
+                    raise PortalError(401, f"{e} (login as {user} failed: check {ENV_USER}/{ENV_PASSWORD}; "
+                                           f"accounts that sign in with Google/SSO or two-factor auth need "
+                                           f"{ENV_KEY}/{ENV_SECRET} instead)") from None
+                raise
+            self.auth = "password"
+        elif key and secret:
             self.headers["Authorization"] = f"token {key}:{secret}"
             self.auth = "token"
-        elif user and password:
-            self.auth = "password"
-            self.request("POST", "/api/method/login", body={"usr": user, "pwd": password})
         else:
-            die(f"no credentials. Export {ENV_KEY} and {ENV_SECRET} (or {ENV_USER} and {ENV_PASSWORD}).")
+            die(f"no credentials. Export {ENV_USER} (your portal login email) and {ENV_PASSWORD}, "
+                f"or {ENV_KEY} and {ENV_SECRET}.")
+
+    def close(self):
+        # Ends the session this run opened. Sites that cap sessions per user would otherwise
+        # evict the user's browser session after a few runs.
+        if self.auth == "password":
+            try:
+                self.request("POST", "/api/method/logout")
+            except PortalError:
+                pass
 
     def _url(self, path, params=None):
         url = path if path.startswith("http") else self.base + path
@@ -475,7 +493,11 @@ def main():
     handlers = {"check": cmd_check, "task": cmd_task, "find": cmd_find, "download": cmd_download,
                 "link-issue": cmd_link_issue, "api": cmd_api}
     try:
-        handlers[args.cmd](Portal(), args)
+        portal = Portal()
+        try:
+            handlers[args.cmd](portal, args)
+        finally:
+            portal.close()
     except PortalError as e:
         die(str(e))
 

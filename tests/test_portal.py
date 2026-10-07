@@ -8,6 +8,8 @@ from urllib.parse import urlparse, parse_qs, unquote
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "8848-triage", "scripts", "portal.py")
 KEY, SECRET = "k123", "s456"
+EMAIL, PASSWORD = "dev@example.com", "p@ss$w0rd!'`x"  # shell-hostile on purpose
+SID = "sess-1"
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
 TASK = {
@@ -21,7 +23,7 @@ TASK = {
 FIELD_TYPES = {"task_remarks": "Small Text", "subject": "Data", "description": "Text Editor"}
 PROJECT = {"name": "PROJ-0042", "project_name": "Demo Project", "status": "Open",
            "notes": "<p>Repo: https://github.com/example/demo-app</p>", "customer": "Acme"}
-STATE = {"puts": []}
+STATE = {"puts": [], "logins": 0, "logouts": 0}
 
 
 class H(BaseHTTPRequestHandler):
@@ -34,7 +36,9 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
     def _authed(self):
-        if self.headers.get("Authorization") != f"token {KEY}:{SECRET}":
+        token_ok = self.headers.get("Authorization") == f"token {KEY}:{SECRET}"
+        session_ok = f"sid={SID}" in (self.headers.get("Cookie") or "")
+        if not (token_ok or session_ok):
             self._send(401, {"exc_type": "AuthenticationError", "_server_messages": json.dumps([json.dumps({"message": "Invalid API key"})])})
             return False
         return True
@@ -72,6 +76,23 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, raw=b"%PDF-1.4 fake", ctype="application/pdf")
         self._send(404, {"exc_type": "DoesNotExistError"})
 
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        if self.path == "/api/method/login":
+            if body.get("usr") == EMAIL and body.get("pwd") == PASSWORD:
+                STATE["logins"] += 1
+                self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.send_header("Set-Cookie", f"sid={SID}; Path=/; HttpOnly")
+                payload = json.dumps({"message": "Logged In", "full_name": "Dev"}).encode()
+                self.send_header("Content-Length", str(len(payload))); self.end_headers(); self.wfile.write(payload)
+                return
+            return self._send(401, {"exc_type": "AuthenticationError", "message": "Invalid login credentials"})
+        if self.path == "/api/method/logout":
+            STATE["logouts"] += 1
+            return self._send(200, {"message": None})
+        self._send(404, {"exc_type": "DoesNotExistError"})
+
     def do_PUT(self):
         if not self._authed():
             return
@@ -84,7 +105,9 @@ class H(BaseHTTPRequestHandler):
 srv = HTTPServer(("127.0.0.1", 0), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 base = f"http://127.0.0.1:{srv.server_port}"
-env = {**os.environ, "PORTAL_8848_URL": base + "/app/task", "PORTAL_8848_API_KEY": KEY, "PORTAL_8848_API_SECRET": SECRET}
+# Drop any real portal credentials from the caller's shell so they never reach the mock.
+clean = {k: v for k, v in os.environ.items() if not k.startswith("PORTAL_8848_")}
+env = {**clean, "PORTAL_8848_URL": base + "/app/task", "PORTAL_8848_API_KEY": KEY, "PORTAL_8848_API_SECRET": SECRET}
 fails = []
 
 
@@ -153,6 +176,28 @@ err = run("link-issue", "TASK-2026-01234", "--url", ISSUE, "--field", "nope", ex
 check("no field 'nope'" in err, "link-issue: unknown field -> clear error")
 err = run("link-issue", "TASK-2026-01234", "--url", "https://github.com/x/y/pull/3", expect=1)
 check("GitHub issue URL" in err, "link-issue: rejects non-issue URL")
+
+# ---- email + password (the default login mode)
+pw_env = {**clean, "PORTAL_8848_URL": base, "PORTAL_8848_USERNAME": EMAIL, "PORTAL_8848_PASSWORD": PASSWORD}
+STATE["logins"] = STATE["logouts"] = 0
+out = run("check", e=pw_env)
+check(out["auth"] == "password" and out["user"] == EMAIL, "password: check logs in with email + password")
+check(STATE["logins"] == 1 and STATE["logouts"] == 1, "password: session logged out after the command")
+both = run("check", e={**pw_env, "PORTAL_8848_API_KEY": KEY, "PORTAL_8848_API_SECRET": SECRET})
+check(both["auth"] == "password", "password: wins over API key pair when both are set")
+err = run("check", expect=1, e={**pw_env, "PORTAL_8848_PASSWORD": "wrong"})
+check("login as dev@example.com failed" in err and "PORTAL_8848_API_KEY" in err, "password: bad password -> hint about SSO/API keys")
+t = run("task", "TASK-2026-01234", e=pw_env)
+check(t.get("name") == "TASK-2026-01234" and len(t["comments"]) == 1, "password: task readable via session")
+before = len(STATE["puts"]); outs = STATE["logouts"]
+lk = run("link-issue", "TASK-2026-01234", "--url", ISSUE.replace("130", "140"), e=pw_env)
+check(lk.get("status") == "appended" and len(STATE["puts"]) == before + 1, "password: link-issue writes via session")
+check(STATE["logouts"] == outs + 1, "password: logout also runs after a write")
+logouts = STATE["logouts"]
+run("check")
+check(STATE["logouts"] == logouts, "token: no logout call for API-key auth")
+err = run("check", expect=1, e={**clean, "PORTAL_8848_URL": base})
+check("PORTAL_8848_USERNAME" in err, "no credentials -> asks for email + password first")
 
 srv.shutdown()
 print("\nALL PASS" if not fails else f"\n{len(fails)} FAILURE(S):\n" + "\n".join(fails))
